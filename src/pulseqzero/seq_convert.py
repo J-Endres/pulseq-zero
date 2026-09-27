@@ -1,3 +1,5 @@
+import math
+
 import torch
 import MRzeroCore as mr0
 from . import calc_duration
@@ -13,12 +15,130 @@ def convert_tensors_to_float32(obj):
     return obj
 
 
+def _is_tensor(value) -> bool:
+    return isinstance(value, torch.Tensor)
+
+
+def _delay_is_static(delay) -> bool:
+    if delay is None:
+        return True
+    if isinstance(delay, SoftDelay):
+        return False
+    return isinstance(delay, Delay) and not _is_tensor(delay.delay)
+
+
+def _grad_is_static(grad) -> bool:
+    if grad is None:
+        return True
+    if isinstance(grad, TrapGrad):
+        return not any(
+            _is_tensor(getattr(grad, name))
+            for name in ("amplitude", "rise_time", "flat_time", "fall_time", "delay")
+        )
+    if isinstance(grad, ArbitraryGrad):
+        return not any(
+            _is_tensor(getattr(grad, name))
+            for name in ("waveform", "delay", "first", "last")
+        )
+    if isinstance(grad, ExtTrapGrad):
+        return not _is_tensor(grad.waveform) and not _is_tensor(grad._times)
+    return False
+
+
+def _rf_is_replayable(delay, rf, grads, sample_counts) -> bool:
+    """True when a later call can refresh this RF without rebuilding its shape."""
+    if not _delay_is_static(delay):
+        return False
+    if rf.shim_array is not None and _is_tensor(rf.shim_array):
+        return False
+    if any(_is_tensor(getattr(rf, name)) for name in ("delay", "shape_dur", "center")):
+        return False
+    if not all(_grad_is_static(grad) for grad in grads):
+        return False
+    # Which sub-pulse count is used depends on freq_offset being zero or not.
+    # A tensor carrier can cross that branch when the three counts differ.
+    if _is_tensor(rf.freq_offset) and len(set(sample_counts)) != 1:
+        return False
+    return True
+
+
+def _adc_is_replayable(delay, adc, grads) -> bool:
+    if not _delay_is_static(delay):
+        return False
+    if _is_tensor(adc.dwell) or _is_tensor(adc.delay):
+        return False
+    return all(_grad_is_static(grad) for grad in grads)
+
+
+def _mark_spoiler(patches, block_index, delay, grads, events) -> None:
+    if isinstance(delay, SoftDelay):
+        patches["ok"] = False
+        return
+    if not _delay_is_static(delay) or not all(_grad_is_static(grad) for grad in grads):
+        events[0]._reparse = block_index
+
+
+def _mark_rf(patches, block_index, delay, rf, grads, samples, sample_counts, events) -> None:
+    if not _rf_is_replayable(delay, rf, grads, sample_counts):
+        patches["ok"] = False
+        return
+    pulses = [ev for ev in events if isinstance(ev, TmpPulse)]
+    shape_dur = float(torch.as_tensor(rf.shape_dur).detach())
+    step = shape_dur / samples
+    angle_live = _is_tensor(rf.flip_angle)
+    phase_live = _is_tensor(rf.phase_offset) or _is_tensor(rf.freq_offset)
+    for i, ev in enumerate(pulses):
+        if angle_live:
+            fa = torch.as_tensor(rf.flip_angle, dtype=torch.float32).reshape(-1)[0]
+            if float(fa.detach().abs()) < 1e-8:
+                patches["ok"] = False
+                return
+            actual = torch.as_tensor(ev.angle, dtype=torch.float32).reshape(-1)[0]
+            ev._frac = float((actual.detach() / fa.detach()).item())
+            ev._src_block = block_index
+            ev._usage_open = ev.use == mr0.PulseUsage.UNDEF
+        if phase_live:
+            coeff = 2.0 * math.pi * step * i
+            predicted = torch.as_tensor(rf.phase_offset, dtype=torch.float32) + coeff * torch.as_tensor(
+                rf.freq_offset, dtype=torch.float32
+            )
+            actual = torch.as_tensor(ev.phase, dtype=torch.float32)
+            if not torch.allclose(actual, predicted, rtol=1e-4, atol=1e-5):
+                patches["ok"] = False
+                return
+            ev._phase_coeff = coeff
+            ev._src_block = block_index
+            ev._freq_live = _is_tensor(rf.freq_offset)
+
+
+def _mark_adc(patches, block_index, delay, adc, grads, events) -> None:
+    if not _adc_is_replayable(delay, adc, grads):
+        patches["ok"] = False
+        return
+    if not (_is_tensor(adc.phase_offset) or _is_tensor(adc.freq_offset)):
+        return
+    adc_ev = events[0]
+    t_samples = adc.delay + (torch.arange(adc.num_samples, dtype=torch.float32) + 0.5) * adc.dwell
+    predicted = torch.as_tensor(adc.phase_offset, dtype=torch.float32) + (
+        2.0 * math.pi * torch.as_tensor(adc.freq_offset, dtype=torch.float32) * t_samples
+    )
+    actual = torch.as_tensor(adc_ev.phase, dtype=torch.float32)
+    if not torch.allclose(actual, predicted, rtol=1e-4, atol=1e-5):
+        patches["ok"] = False
+        return
+    adc_ev._live_adc = (
+        block_index,
+        tuple(float(value) for value in t_samples.detach().reshape(-1)),
+    )
+
+
 def convert(
-    pp0, samples_offres: int, samples_slicesel: int, samples_onres: int
+    pp0, samples_offres: int, samples_slicesel: int, samples_onres: int, *, _patches=None
 ) -> mr0.Sequence:
     seq = []
+    sample_counts = (samples_offres, samples_slicesel, samples_onres)
 
-    for block in pp0.blocks:
+    for block_index, block in enumerate(pp0.blocks):
         delay = None
         adc = None
         rf = None
@@ -27,15 +147,19 @@ def convert(
         grad_z = None
         for ev in block:
             ev = convert_tensors_to_float32(ev)
+            known = False
             if isinstance(ev, (Delay, SoftDelay)):
                 assert delay is None
                 delay = ev
+                known = True
             if isinstance(ev, Adc):
                 assert adc is None
                 adc = ev
+                known = True
             if isinstance(ev, RfPulse):
                 assert rf is None
                 rf = ev
+                known = True
             if isinstance(ev, (TrapGrad, ExtTrapGrad, ArbitraryGrad)):
                 assert ev.channel in ["x", "y", "z"]
                 if ev.channel == "x":
@@ -47,22 +171,49 @@ def convert(
                 elif ev.channel == "z":
                     assert grad_z is None
                     grad_z = ev
+                known = True
+            if not known and _patches is not None:
+                _patches["ok"] = False
 
         if rf:
             assert adc is None
-            # Use pulse sub-samples according to the type of pulse
-            if rf.freq_offset != 0:
+            # Use pulse sub-samples according to the type of pulse.
+            # A tensor carrier has no truth value; any non-zero entry selects
+            # the off-resonance sample count, matching a numeric offset.
+            freq = rf.freq_offset
+            freq_nonzero = (
+                bool((freq != 0).any().item()) if _is_tensor(freq) else freq != 0
+            )
+            if freq_nonzero:
                 samples = samples_offres
             elif grad_x or grad_y or grad_z:
                 samples = samples_slicesel
             else:
                 samples = samples_onres
 
-            seq += parse_pulse(delay, rf, grad_x, grad_y, grad_z, samples)
+            events = parse_pulse(delay, rf, grad_x, grad_y, grad_z, samples)
+            if _patches is not None:
+                _mark_rf(
+                    _patches,
+                    block_index,
+                    delay,
+                    rf,
+                    (grad_x, grad_y, grad_z),
+                    samples,
+                    sample_counts,
+                    events,
+                )
+            seq += events
         elif adc:
-            seq += parse_adc(delay, adc, grad_x, grad_y, grad_z)
+            events = parse_adc(delay, adc, grad_x, grad_y, grad_z)
+            if _patches is not None:
+                _mark_adc(_patches, block_index, delay, adc, (grad_x, grad_y, grad_z), events)
+            seq += events
         else:
-            seq += parse_spoiler(delay, grad_x, grad_y, grad_z)
+            events = parse_spoiler(delay, grad_x, grad_y, grad_z)
+            if _patches is not None:
+                _mark_spoiler(_patches, block_index, delay, (grad_x, grad_y, grad_z), events)
+            seq += events
 
     reps = []
     rep = []
@@ -73,7 +224,7 @@ def convert(
         rep.append(ev)
 
     seq = mr0.Sequence()
-    for rep_in in reps:
+    for rep_index, rep_in in enumerate(reps):
         event_count = 0
         for ev in rep_in:
             if isinstance(ev, TmpAdc):
@@ -110,6 +261,29 @@ def convert(
         # pulse_freq = ω₁ = angle/duration (legacy field, to be removed upstream)
         rep_out.pulse.pulse_freq = rep_out.pulse.angle / rep_out.pulse.duration
 
+        if _patches is not None:
+            pulse_ev = rep_in[0]
+            if getattr(pulse_ev, "_frac", None) is not None:
+                _patches["ops"].append(
+                    (
+                        "angle",
+                        rep_index,
+                        pulse_ev._src_block,
+                        pulse_ev._frac,
+                        pulse_ev._usage_open,
+                    )
+                )
+            if getattr(pulse_ev, "_phase_coeff", None) is not None:
+                _patches["ops"].append(
+                    (
+                        "phase",
+                        rep_index,
+                        pulse_ev._src_block,
+                        pulse_ev._phase_coeff,
+                        pulse_ev._freq_live,
+                    )
+                )
+
         # pulse.usage: honour the rf.use tag when it's explicit; only fall back
         # to the flip-angle heuristic when the tag was not set ('undefined'/UNDEF).
         if rep_in[0].use != mr0.PulseUsage.UNDEF:
@@ -127,12 +301,17 @@ def convert(
         i = 0
         for ev in rep_in[1:]:
             if isinstance(ev, TmpSpoiler):
+                if _patches is not None and getattr(ev, "_reparse", None) is not None:
+                    _patches["ops"].append(("spoiler", rep_index, i, ev._reparse))
                 rep_out.event_time[i] = ev.duration
                 rep_out.gradm[i, :] = ev.gradm
                 i += 1
             else:
                 assert isinstance(ev, TmpAdc)
                 num = len(ev.event_time)
+                if _patches is not None and getattr(ev, "_live_adc", None) is not None:
+                    adc_block, t_samples = ev._live_adc
+                    _patches["ops"].append(("adc", rep_index, i, num, adc_block, t_samples))
                 rep_out.event_time[i : i + num] = torch.as_tensor(ev.event_time)
                 rep_out.gradm[i : i + num, :] = torch.as_tensor(ev.gradm)
                 rep_out.adc_phase[i : i + num] = torch.pi / 2 - ev.phase

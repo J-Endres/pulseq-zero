@@ -241,6 +241,20 @@ class Sequence:
         return pp_seq
 
     def to_mr0(
-        self, samples_offres: int = 1, samples_slicesel: int = 1, samples_onres: int = 1
+        self,
+        samples_offres: int = 1,
+        samples_slicesel: int = 1,
+        samples_onres: int = 1,
+        *,
+        speed_up_by_assuming_const_seq_structure: bool = False,
     ) -> MRzeroCore.Sequence:
-        return seq_convert.convert(self, samples_offres, samples_slicesel, samples_onres)
+        """Convert to an MRzeroCore sequence.
+
+        With ``speed_up_by_assuming_const_seq_structure``, a repeated call that
+        builds the same blocks only refreshes tensor values such as flip angle
+        and delay. A different layout is converted from scratch.
+        """
+        if not speed_up_by_assuming_const_seq_structure:
+            return seq_convert.convert(self, samples_offres, samples_slicesel, samples_onres)
+        from ..convert_cache import convert_cached
+        return convert_cached(self, samples_offres, samples_slicesel, samples_onres)
