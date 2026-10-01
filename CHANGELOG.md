@@ -5,6 +5,35 @@ All notable changes to pulseq-zero are recorded in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0]
+
+### Added
+
+- **Constant-structure `to_mr0()`.**
+  `seq.to_mr0(speed_up_by_assuming_const_seq_structure=True)` reuses a
+  previous conversion when the block layout is unchanged and writes the new
+  tensor values (flip angle, phase, delay, ADC phase) into a clone. A
+  different layout, a tensor gradient waveform, or a soft delay is converted
+  from scratch. Gradients still reach the new tensors.
+  `pulseqzero.convert_cache.clear_structure_cache()` drops the cache.
+  Covered by [tests/test_const_structure.py](tests/test_const_structure.py).
+
+- **Faster TSE demo.** [demo/main.py](demo/main.py) builds the sequence once.
+  The refocusing pulses keep the flip-angle tensor, so Adam updates it in
+  place and later iterations only refresh `to_mr0()`. `check_timing()` (a
+  full PyPulseq translation) therefore runs at build time, outside the loop.
+  The phase-graph prepass runs every fifth iteration. The phantom is
+  `mr0.util.load_phantom(size=(64, 64))`. Each iteration prints its wall
+  time. [demo/main_fast.py](demo/main_fast.py) and `demo/main.py --fast`
+  turn the constant-structure conversion on.
+
+### Performance
+
+On the 16-echo TSE flip-angle demo, reorganizing the loop (build the
+sequence once, prepass every fifth iteration, 64×64 phantom) took one
+iteration from about 3 s to about 1 s. Enabling
+`speed_up_by_assuming_const_seq_structure` brought that to about 0.75 s.
+
 ## [1.0.4]
 
 ### Added

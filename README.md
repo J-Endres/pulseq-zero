@@ -118,13 +118,22 @@ The [demo/](demo/) workspace uses exactly this pattern: [demo/write_tse.py](demo
   my_gre_seq(TR, TE).write("tse_optim.seq")
   ```
 
+### Repeated `to_mr0()` in an optimization loop
+
+When only tensor values change (flip angle, phase, delay, ADC phase) and the block list stays the same, pass `speed_up_by_assuming_const_seq_structure=True`. The first call converts fully. Later calls clone that result and write the new tensors in. Gradients still reach those tensors. A different layout is converted from scratch.
+
+Rebuilding the Pulseq sequence on every iteration still pays for `check_timing()`, which translates the whole sequence through PyPulseq. Build once and keep the optimized tensors on the events. [demo/main.py](demo/main.py) does that for a 16-echo TSE: the refocusing pulses hold the flip-angle tensor, the phase-graph prepass is recomputed every fifth iteration, and the phantom is `mr0.util.load_phantom(size=(64, 64))`. [demo/main_fast.py](demo/main_fast.py) is the same run with the conversion cache on.
+
+On that demo, the reorganization took one iteration from about 3 s to about 1 s. The constant-structure conversion brought it to about 0.75 s.
+
 
 ## 3. Development
 
 The recommended dev toolchain is [uv](https://docs.astral.sh/uv/). Install it once ([install instructions](https://docs.astral.sh/uv/getting-started/installation/)), then run the demos straight from the repo root:
 
 ```bash
-uv run demo/main.py        # end-to-end optimization demo (needs demo/brain.npz)
+uv run demo/main.py        # TSE flip-angle optimization (~1 s/iter)
+uv run demo/main_fast.py   # same run, constant-structure to_mr0 (~0.75 s/iter)
 uv run demo/write_tse.py   # build a TSE sequence, plot it, and emit tse_pypulseq.seq
 ```
 
@@ -172,7 +181,7 @@ See [MATH.md](MATH.md) for the full set of differentiable math helpers, includin
 
 Every `pulseqzero.Sequence` supports both paths unconditionally:
 
-- `mr0_seq = seq.to_mr0()` — build an `MRzeroCore.Sequence` for PDG simulation / optimization.
+- `mr0_seq = seq.to_mr0()` — build an `MRzeroCore.Sequence` for PDG simulation / optimization. Pass `speed_up_by_assuming_const_seq_structure=True` to reuse that conversion on later calls with the same block layout; see [Repeated `to_mr0()` in an optimization loop](#repeated-to_mr0-in-an-optimization-loop).
 - `seq.write("out.seq")` — translate the internal event graph through PyPulseq and emit a `.seq` file. A one-time `warnings.warn` is raised per call so you notice if it fires inside a hot loop (move it out of the optimizer).
 
 If you need a native PyPulseq `Sequence` for a one-off exotic call, `seq.to_pypulseq()` is the explicit escape hatch.
