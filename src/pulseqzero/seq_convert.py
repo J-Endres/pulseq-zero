@@ -606,7 +606,7 @@ def integrate_pulse(rf: RfPulse, t_start, t_end):
     # the (detached) shape and timing. Multiplying by the live rf.flip_angle
     # tensor keeps the gradient of the user's flip-angle parameter.
     fraction = pulse_fraction(
-        rf.shape, float(rf.shape_dur), float(rf.delay), float(t_start), float(t_end)
+        rf.waveform, float(rf.shape_dur), float(rf.delay), float(t_start), float(t_end)
     )
     flip = torch.as_tensor(rf.flip_angle) * fraction
     phase = (
@@ -631,7 +631,7 @@ def pulse_shape(shape: RfShape, shape_dur: float) -> tuple[np.ndarray, np.ndarra
         shim_array=None,
         freq_ppm=0.0,
         phase_ppm=0.0,
-        shape=shape,
+        waveform=shape,
     )
     pp_rf = unit_pulse.to_pulseq(Opts.default)
     return np.asarray(pp_rf.t), np.asarray(pp_rf.signal)

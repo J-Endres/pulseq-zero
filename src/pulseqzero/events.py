@@ -62,7 +62,7 @@ class RfPulse:
     shim_array: Optional[Array]  # Martins pTx extension
     freq_ppm: Scalar
     phase_ppm: Scalar
-    shape: RfShape  # parameters the waveform is generated from
+    waveform: RfShape  # parameters the waveform is generated from
 
     @property
     def duration(self) -> Scalar:
@@ -70,7 +70,7 @@ class RfPulse:
 
     def to_pulseq(self, system: Opts) -> SimpleNamespace:
         # Pulses never generate gz / gzr: already split TrapGrad blocks
-        return self.shape.to_pulseq(self, system)
+        return self.waveform.to_pulseq(self, system)
 
 
 # constructed in make_trapezoid

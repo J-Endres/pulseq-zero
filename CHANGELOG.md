@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time points at once. On the 16-echo TSE, a full conversion went from about
   230 ms to about 105 ms and a cached one takes about 13 ms
   ([demo/benchmark_to_mr0.py](demo/benchmark_to_mr0.py)).
-- **RF shapes.** `RfPulse` stores the parameters of its waveform as a
+- **RF shapes.** `RfPulse.waveform` stores the parameters of its waveform as a
   `BlockShape`, `GaussShape`, `SincShape` or `ArbitraryShape` instead of a
   pypulseq factory function, and `freq_ppm` / `phase_ppm` as fields.
 - **TSE demo.** [demo/main.py](demo/main.py) checks the timing once before

@@ -61,7 +61,7 @@ def make_block_pulse(
         shim_array=shim_array,
         freq_ppm=freq_ppm,
         phase_ppm=phase_ppm,
-        shape=BlockShape(),
+        waveform=BlockShape(),
     )
 
 
@@ -114,7 +114,7 @@ def make_gauss_pulse(
         shim_array=shim_array,
         freq_ppm=freq_ppm,
         phase_ppm=phase_ppm,
-        shape=GaussShape(
+        waveform=GaussShape(
             apodization=_n(apodization),
             bandwidth=_n(bandwidth),
             center_pos=_n(center_pos),
@@ -206,7 +206,7 @@ def make_sinc_pulse(
         shim_array=shim_array,
         freq_ppm=freq_ppm,
         phase_ppm=phase_ppm,
-        shape=SincShape(
+        waveform=SincShape(
             apodization=_n(apodization),
             center_pos=_n(center_pos),
             dwell=_n(dwell),
@@ -313,7 +313,7 @@ def make_arbitrary_rf(
         shim_array=shim_array,
         freq_ppm=freq_ppm,
         phase_ppm=phase_ppm,
-        shape=ArbitraryShape(
+        waveform=ArbitraryShape(
             signal=tuple(np.atleast_1d(_n(signal)).tolist()),
             dwell=_n(dwell),
             center=_n(center),
