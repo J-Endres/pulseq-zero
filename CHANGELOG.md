@@ -5,6 +5,28 @@ All notable changes to pulseq-zero are recorded in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Cached `to_mr0()`.** The MR-zero sequence of the last call with the same
+  block layout is reused. Blocks whose non-tensor content changed are
+  converted again, and every block holding a tensor is written again so that
+  gradients reach it: flip angle, phase and frequency offsets only update the
+  pulse rotation or ADC phase, timing and gradient tensors convert their
+  block. `to_mr0(cached=False)` converts from scratch,
+  `seq_convert.clear_cache()` frees the cached sequences. Pulse shapes and
+  their integrals are cached, and gradient moments are integrated for all
+  time points at once. On the 16-echo TSE, a full conversion went from about
+  230 ms to about 105 ms and a cached one takes about 13 ms
+  ([demo/benchmark_to_mr0.py](demo/benchmark_to_mr0.py)).
+- **RF shapes.** `RfPulse` stores the parameters of its waveform as a
+  `BlockShape`, `GaussShape`, `SincShape` or `ArbitraryShape` instead of a
+  pypulseq factory function, and `freq_ppm` / `phase_ppm` as fields.
+- **TSE demo.** [demo/main.py](demo/main.py) checks the timing once before
+  the optimization loop instead of in every rebuild, and prints the time of
+  every iteration.
+
 ## [1.0.4]
 
 ### Added
