@@ -24,15 +24,22 @@ from write_tse import main as build_tse  # noqa: E402
 N_REPEAT = 10
 
 
-# Both cached to_mr0() APIs: this branch and the constant-structure PR
-if "speed_up_by_assuming_const_seq_structure" in inspect.signature(pp.Sequence.to_mr0).parameters:
+# Both cached to_mr0() APIs: this branch and the constant-structure PR.
+# Versions without a cache convert from scratch in both columns.
+TO_MR0_PARAMETERS = inspect.signature(pp.Sequence.to_mr0).parameters
+if "speed_up_by_assuming_const_seq_structure" in TO_MR0_PARAMETERS:
     from pulseqzero.convert_cache import clear_structure_cache as clear_cache
     CACHED = {"speed_up_by_assuming_const_seq_structure": True}
     FULL = {}
-else:
+elif "cached" in TO_MR0_PARAMETERS:
     from pulseqzero.seq_convert import clear_cache
     CACHED = {}
     FULL = {"cached": False}
+else:
+    def clear_cache():
+        pass
+    CACHED = {}
+    FULL = {}
 
 
 def tse(k):
