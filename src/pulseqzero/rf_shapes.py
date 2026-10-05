@@ -4,7 +4,7 @@ An `RfPulse` stores the parameters its waveform is generated from in
 `rf.waveform` instead of the waveform itself (not `rf.shape`, which numpy and
 user code read as an array shape). The shape classes are frozen dataclasses:
 they compare by value and can be used as keys of cached functions, so
-`to_mr0()` generates each distinct waveform once (see `seq_convert_cached.pulse_shape`).
+`to_mr0()` generates each distinct waveform once (see `seq_convert.pulse_shape`).
 
 `to_pulseq` builds the matching pypulseq pulse for writing, plotting etc. The
 time-dependent and differentiable parameters (flip angle, delay, duration,

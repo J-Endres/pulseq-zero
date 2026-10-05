@@ -15,19 +15,16 @@ iteration and usually only change a few tensors, this skips the rest.
 """
 
 from dataclasses import dataclass
-from functools import lru_cache
 from types import SimpleNamespace
 from typing import NamedTuple
 
 import numpy as np
 import torch
 import MRzeroCore as mr0
-from pypulseq import Opts
 
 from . import calc_duration
 from .events import Adc, Delay, SoftDelay, RfPulse, TrapGrad, ExtTrapGrad, ArbitraryGrad
-from .rf_shapes import RfShape
-from .seq_convert import TmpPulse, TmpSpoiler, TmpAdc
+from .seq_convert import TmpPulse, TmpSpoiler, TmpAdc, integrate, integrate_pulse
 
 
 # =============================================================================
@@ -443,155 +440,3 @@ def parse_adc(block: Block) -> tuple[TmpAdc, TmpSpoiler]:
         TmpAdc(event_time[:-1], gradm[:-1, :], adc_phase(adc)),
         TmpSpoiler(event_time[-1], gradm[-1, 0], gradm[-1, 1], gradm[-1, 2]),
     )
-
-
-# =============================================================================
-# Integration of gradients and pulses
-# =============================================================================
-
-
-def integrate(grad, t):
-    """Gradient moment from the start of the block up to t (scalar or 1D tensor)."""
-    if isinstance(grad, TrapGrad):
-        # The Heaviside terms only select which piece of the piecewise integral
-        # is active; they are not part of the integrand. torch.heaviside has no
-        # backward implementation, so the step is evaluated detached. Without
-        # this, optimizing anything that ends up in a time shape raises
-        # "derivative for aten::heaviside is not implemented".
-        def h(x):
-            x = torch.as_tensor(x)
-            return torch.heaviside(x.detach(), torch.tensor(0.5, dtype=x.dtype))
-
-        # https://www.desmos.com/calculator/0q5co02ecm
-
-        d = grad.delay
-        t1 = grad.rise_time
-        t2 = grad.flat_time
-        t3 = grad.fall_time
-        T1 = d + t1
-        T12 = d + t1 + t2
-        T123 = d + t1 + t2 + t3
-
-        # Trapezoid, could be provided as derivative:
-        # f1 = h(t - d) * h(T1 - t) * (t - d) / t1
-        # f2 = h(t - T1) * h(T12 - t)
-        # f3 = h(t - T12) * h(T123 - t) * (T123 - t) / t3
-        # f = grad.amplitude * (f1 + f2 + f3)
-
-        F_inf = t1 / 2 + t2 + t3 / 2
-        F1 = h(t - d) * h(T1 - t) * 0.5 * (t - d) ** 2 / t1
-        F2 = h(t - T1) * h(T12 - t) * (t1 / 2 + t - T1)
-        F3 = h(t - T12) * h(T123 - t) * (F_inf - 0.5 * (T123 - t) ** 2 / t3)
-        F = grad.amplitude * (F1 + F2 + F3 + h(t - T123) * F_inf)
-
-        return F
-    elif isinstance(grad, ExtTrapGrad | ArbitraryGrad):
-        # To stay differentiable, we don't want dynamic indexing, but instead
-        # calculate, how much of every segment of the gradient contributes
-        # https://www.desmos.com/calculator/j2vopzhb2z
-
-        d = grad.delay
-
-        tt = torch.as_tensor(grad.tt)
-        waveform = torch.as_tensor(grad.waveform).reshape(-1)
-
-        if isinstance(grad, ArbitraryGrad):
-            tt = torch.cat((
-                torch.zeros(1, dtype=tt.dtype),
-                tt,
-                torch.as_tensor(grad.shape_dur, dtype=tt.dtype).reshape(1),
-            ))
-
-            waveform = torch.cat((
-                torch.as_tensor(grad.first, dtype=waveform.dtype).reshape(1),
-                waveform,
-                torch.as_tensor(grad.last, dtype=waveform.dtype).reshape(1),
-            ))
-
-        # Start and end time point and amplitude of all line segments
-        t1 = d + tt[:-1]
-        t2 = d + tt[1:]
-        c1 = waveform[:-1]
-        c2 = waveform[1:]
-
-        # One row of segments per time point
-        t = torch.as_tensor(t)[..., None]
-        # This is how much of every segment contributes, clamped to [0, width]
-        t_rel = torch.clamp(t - t1, 0 * t1, t2 - t1)
-        # The amplitude of the segment at t, will be clamped to the amplitude
-        # of the right point for segments before t and the left point for
-        # segments after; only one segment where t lies in will be interpolated
-        c_end = c1 + t_rel / (t2 - t1) * (c2 - c1)
-        # For integration, we calculate the area of the rectangle with the
-        # average height of the left and right side of the actual shape
-        c_avg = 0.5 * (c1 + c_end)
-        return (t_rel * c_avg).sum(-1)
-    else:
-        raise NotImplementedError
-
-
-def integrate_pulse(rf: RfPulse, t_start, t_end):
-    # The fraction of the pulse area inside [t_start, t_end] only depends on
-    # the (detached) shape and timing. Multiplying by the live rf.flip_angle
-    # tensor keeps the gradient of the user's flip-angle parameter.
-    fraction = pulse_fraction(
-        rf.waveform, float(rf.shape_dur), float(rf.delay), float(t_start), float(t_end)
-    )
-    flip = torch.as_tensor(rf.flip_angle) * fraction
-    phase = (
-        rf.phase_offset + 0.0
-    )  # not returned by the _generate_shape() function - extend!
-
-    return flip, phase
-
-
-@lru_cache(maxsize=256)
-def pulse_shape(shape: RfShape, shape_dur: float) -> tuple[np.ndarray, np.ndarray]:
-    """Time points (from the shape start) and amplitudes of the pulse waveform."""
-    unit_pulse = RfPulse(
-        flip_angle=1.0,
-        freq_offset=0.0,
-        phase_offset=0.0,
-        delay=0.0,
-        shape_dur=shape_dur,
-        center=0.0,
-        ringdown_time=0.0,
-        use="undefined",
-        shim_array=None,
-        freq_ppm=0.0,
-        phase_ppm=0.0,
-        waveform=shape,
-    )
-    pp_rf = unit_pulse.to_pulseq(Opts.default)
-    return np.asarray(pp_rf.t), np.asarray(pp_rf.signal)
-
-
-@lru_cache(maxsize=4096)
-def pulse_fraction(
-    shape: RfShape, shape_dur: float, delay: float, t_start: float, t_end: float
-) -> float:
-    """Fraction of the pulse area between t_start and t_end (block time)."""
-    t_rel, amp_shape = pulse_shape(shape, shape_dur)
-    time_shape = t_rel + delay
-
-    # Clamp the window to the support of the RF shape. Outside of it the RF is
-    # zero, but a trapezoidal segment joining a zero pad point to a non-zero
-    # boundary sample would contribute area that the pulse does not have
-    # (block pulses and most arbitrary RF are non-zero at their boundaries).
-    lo = max(t_start, float(time_shape[0]))
-    hi = min(t_end, float(time_shape[-1]))
-    if hi <= lo:
-        return 0.0
-    # Find where lo and hi are placed in time_shape
-    i_start = np.searchsorted(time_shape, lo, side="left")
-    i_end = np.searchsorted(time_shape, hi, side="right")
-    # Find the interpolated shape values at lo and hi
-    v_start = np.interp(lo, time_shape, amp_shape)
-    v_end = np.interp(hi, time_shape, amp_shape)
-    # Construct the shape of the integrated part of the pulse
-    time = [lo] + time_shape[i_start:i_end].tolist() + [hi]
-    amp = [v_start] + amp_shape[i_start:i_end].tolist() + [v_end]
-
-    window_area = np.trapezoid(amp, time)
-    full_area = np.trapezoid(amp_shape, time_shape)
-    return float(window_area / full_area) if full_area != 0 else 0.0
