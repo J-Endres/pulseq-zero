@@ -256,3 +256,11 @@ class Sequence:
         if cached:
             return seq_convert_cached.convert_cached(self, samples_offres, samples_slicesel, samples_onres)
         return seq_convert.convert(self, samples_offres, samples_slicesel, samples_onres)
+
+    def simulate(self, sim, **to_mr0_kwargs):
+        """Simulate the sequence with ``sim`` (see :mod:`pulseqzero.sim`).
+
+        Returns the signal as a complex tensor ``[ADC samples, 1]`` that carries
+        the gradients of all tensor parameters of the sequence.
+        """
+        return sim.simulate(self.to_mr0(**to_mr0_kwargs))

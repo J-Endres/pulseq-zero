@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`seq.simulate(sim)`** with the simulators of `pulseqzero.sim`: `MR0` (MR-zero
+  PDG, as before) and `Rapisim` ([rapisim](https://github.com/mrx-org/tool-rapisim)
+  with gradients, as a local binary or through an MCP gateway; `pip install
+  pulseqzero[rapisim]`). Both return the signal as a differentiable tensor, so the
+  optimization loop is the same for both. See [demo/optim.py](demo/optim.py)
+  (`--sim mr0|rapisim`) and [tests/test_sim_rapisim.py](tests/test_sim_rapisim.py).
+
 ## [1.1.0]
 
 ### Changed

@@ -142,6 +142,7 @@ from .wrapper.grad_funcs import (
     add_gradients,
 )
 from .wrapper.sequence import Sequence
+from . import sim
 
 # No pulseq-zero support (documented), calling will raise NotImplementedError.
 from .not_implemented import (

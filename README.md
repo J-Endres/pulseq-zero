@@ -101,6 +101,15 @@ The [demo/](demo/) workspace uses exactly this pattern: [demo/write_tse.py](demo
   signal = mr0.execute_graph(graph, seq, sim_data)
   reco = mr0.reco_adjoint(signal, seq.get_kspace())
   ```
+- **Choose the simulator**: `seq.simulate(sim)` returns the signal as a differentiable tensor `[ADC samples, 1]`, with MR-zero or with [rapisim](https://github.com/mrx-org/tool-rapisim) (segmented bifti phantoms, much faster for long echo trains):
+  ```python
+  sim = pp.sim.MR0(sim_data)                               # MR-zero PDG
+  sim = pp.sim.Rapisim("phantom.zip")                      # local rapisim binary ($RAPISIM_BIN)
+  sim = pp.sim.Rapisim("phantom.zip", url=GATEWAY_URL)     # MCP gateway (GitHub login)
+
+  signal = my_gre_seq(TR, TE).simulate(sim)
+  ```
+  Everything else - reconstruction, loss, optimizer - stays as it is, see [demo/optim.py](demo/optim.py). rapisim needs `pip install pulseqzero[rapisim]`. It simulates RF pulses as instantaneous (no slice profile, frequency offset or pTx shims), computes gradients for the `direct` sampler only, and needs `ignore_b1=True` for phantoms with a spatially varying B1+ map. MR-zero's default state thresholds drop weak states, which changes gradients of long echo trains noticeably: use tight ones (`MR0(data, execute_kwargs=dict(min_emitted_signal=1e-6, min_latent_signal=1e-6))`) when comparing.
 - **Optimize sequence parameters with PyTorch**:
   ```python
   TR = torch.tensor(14e-3, requires_grad=True)

@@ -21,6 +21,16 @@ dependencies = [
     "pypulseq>=1.4",
 ]
 
+[project.optional-dependencies]
+# pulseqzero.sim.Rapisim. fastmcp has to match the version of the MCP gateway
+# (https://github.com/mrx-org/mcp-gateway), see its README ("Tool bundling")
+rapisim = [
+    "fastmcp==4.0.0b3",
+    "httpx2",
+    "keyring",
+    "py-key-value-aio[keyring]",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
